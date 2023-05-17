@@ -28,11 +28,17 @@ contract RLN is Ownable {
     /// @dev Registry set size (1 << DEPTH).
     uint256 public immutable SET_SIZE;
 
+    /// @dev ERC20 Token used for staking.
+    IERC20 public immutable TOKEN;
+
+    /// @dev Groth16 verifier.
+    IVerifier public immutable VERIFIER;
+
     /// @dev Address of the fee receiver.
-    address public FEE_RECEIVER;
+    address public feeReceiver;
 
     /// @dev Fee percentage.
-    uint8 public FEE_PERCENTAGE;
+    uint8 public feePercentage;
 
     /// @dev Current index where idCommitment will be stored.
     uint256 public idCommitmentIndex = 0;
@@ -40,12 +46,6 @@ contract RLN is Ownable {
     /// @dev Registry set. The keys are `id_commitment`'s.
     /// The values are addresses of accounts that call `register` transaction.
     mapping(uint256 => User) public members;
-
-    /// @dev ERC20 Token used for staking.
-    IERC20 public immutable token;
-
-    /// @dev Groth16 verifier.
-    IVerifier public immutable verifier;
 
     /// @dev Emmited when a new member registered.
     /// @param idCommitment: `id_commitment`;
@@ -64,27 +64,26 @@ contract RLN is Ownable {
 
     /// @param minimalDeposit: minimal membership deposit;
     /// @param depth: depth of the merkle tree;
-    /// @param feePercentage: fee percentage;
-    /// @param feeReceiver: address of the fee receiver;
+    /// @param _feePercentage: fee percentage;
+    /// @param _feeReceiver: address of the fee receiver;
     /// @param _token: address of the ERC20 contract;
     /// @param _verifier: address of the Groth16 Verifier.
     constructor(
         uint256 minimalDeposit,
         uint256 depth,
-        uint8 feePercentage,
-        address feeReceiver,
+        uint8 _feePercentage,
+        address _feeReceiver,
         address _token,
         address _verifier
     ) {
         MINIMAL_DEPOSIT = minimalDeposit;
         DEPTH = depth;
         SET_SIZE = 1 << depth;
+        TOKEN = IERC20(_token);
+        VERIFIER = IVerifier(_verifier);
 
-        FEE_PERCENTAGE = feePercentage;
-        FEE_RECEIVER = feeReceiver;
-
-        token = IERC20(_token);
-        verifier = IVerifier(_verifier);
+        feePercentage = _feePercentage;
+        feeReceiver = _feeReceiver;
     }
 
     /// @dev Adds `id_commitment` to the registry set and takes the necessary stake amount.
@@ -98,7 +97,7 @@ contract RLN is Ownable {
         require(amount >= MINIMAL_DEPOSIT, "RLN, register: amount is lower than minimal deposit");
         require(members[idCommitment].userAddress == address(0), "RLN, register: idCommitment already registered");
 
-        token.safeTransferFrom(msg.sender, address(this), amount);
+        TOKEN.safeTransferFrom(msg.sender, address(this), amount);
         uint256 messageLimit = amount / MINIMAL_DEPOSIT;
 
         members[idCommitment] = User(msg.sender, messageLimit);
@@ -109,7 +108,7 @@ contract RLN is Ownable {
 
     /// @dev Remove the idCommitment from the registry (withdraw/slash).
     /// Transfer the entire stake to the receiver if they registered
-    /// calculated idCommitment, otherwise transfers `FEE` to the `FEE_RECEIVER`
+    /// calculated idCommitment, otherwise transfers `FEE` to the `feeReceiver`
     /// @param identityCommitment: `identityCommitment`;
     /// @param receiver: stake receiver;
     /// @param proof: snarkjs's format generated proof (without public inputs) packed consequently.
@@ -127,28 +126,28 @@ contract RLN is Ownable {
 
         // If memberAddress == receiver, then withdraw money without a fee
         if (member.userAddress == receiver) {
-            token.safeTransfer(receiver, withdrawAmount);
+            TOKEN.safeTransfer(receiver, withdrawAmount);
             emit MemberWithdrawn(identityCommitment);
         } else {
-            uint256 feeAmount = (FEE_PERCENTAGE * withdrawAmount) / 100;
-            token.safeTransfer(receiver, withdrawAmount - feeAmount);
-            token.safeTransfer(FEE_RECEIVER, feeAmount);
+            uint256 feeAmount = (feePercentage * withdrawAmount) / 100;
+            TOKEN.safeTransfer(receiver, withdrawAmount - feeAmount);
+            TOKEN.safeTransfer(feeReceiver, feeAmount);
             emit MemberSlashed(identityCommitment, receiver);
         }
     }
 
     /// @dev Changes fee percentage.
     ///
-    /// @param feePercentage: new fee percentage.
-    function changeFeePercentage(uint8 feePercentage) external onlyOwner {
-        FEE_PERCENTAGE = feePercentage;
+    /// @param _feePercentage: new fee percentage.
+    function changeFeePercentage(uint8 _feePercentage) external onlyOwner {
+        feePercentage = _feePercentage;
     }
 
     /// @dev Changes fee receiver.
     ///
-    /// @param feeReceiver: new fee receiver.
-    function changeFeeReceiver(address feeReceiver) external onlyOwner {
-        FEE_RECEIVER = feeReceiver;
+    /// @param _feeReceiver: new fee receiver.
+    function changeFeeReceiver(address _feeReceiver) external onlyOwner {
+        feeReceiver = _feeReceiver;
     }
 
     /// @dev Groth16 proof verification
@@ -157,7 +156,7 @@ contract RLN is Ownable {
         view
         returns (bool)
     {
-        return verifier.verifyProof(
+        return VERIFIER.verifyProof(
             [proof[0], proof[1]],
             [[proof[2], proof[3]], [proof[4], proof[5]]],
             [proof[6], proof[7]],

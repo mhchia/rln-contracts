@@ -20,14 +20,17 @@ contract RLN is Ownable {
     /// @dev Registry set size (1 << DEPTH).
     uint256 public immutable SET_SIZE;
 
+    /// @dev ERC20 Token used for staking.
+    IERC20 public immutable TOKEN;
+
+    /// @dev Groth16 verifier.
+    IVerifier public immutable VERIFIER;
+
     /// @dev Address of the fee receiver.
-    address public FEE_RECEIVER;
+    address public feeReceiver;
 
     /// @dev Fee percentage.
-    uint8 public FEE_PERCENTAGE;
-
-    /// @dev Fee amount.
-    uint256 public FEE_AMOUNT;
+    uint8 public feePercentage;
 
     /// @dev Current index where pubkey will be stored.
     uint256 public pubkeyIndex = 0;
@@ -35,12 +38,6 @@ contract RLN is Ownable {
     /// @dev Registry set. The keys are `id_commitment`'s (or pubkey's).
     /// The values are addresses of accounts that call `register` transaction.
     mapping(uint256 => address) public members;
-
-    /// @dev ERC20 Token used for staking.
-    IERC20 public immutable token;
-
-    /// @dev Groth16 verifier.
-    IVerifier public immutable verifier;
 
     /// @dev Emmited when a new member registered.
     /// @param pubkey: pubkey or `id_commitment`;
@@ -58,28 +55,26 @@ contract RLN is Ownable {
 
     /// @param membershipDeposit: membership deposit;
     /// @param depth: depth of the merkle tree;
-    /// @param feePercentage: fee percentage;
-    /// @param feeReceiver: address of the fee receiver;
+    /// @param _feePercentage: fee percentage;
+    /// @param _feeReceiver: address of the fee receiver;
     /// @param _token: address of the ERC20 contract;
     /// @param _verifier: address of the Groth16 Verifier.
     constructor(
         uint256 membershipDeposit,
         uint256 depth,
-        uint8 feePercentage,
-        address feeReceiver,
+        uint8 _feePercentage,
+        address _feeReceiver,
         address _token,
         address _verifier
     ) {
         MEMBERSHIP_DEPOSIT = membershipDeposit;
         DEPTH = depth;
         SET_SIZE = 1 << depth;
+        TOKEN = IERC20(_token);
+        VERIFIER = IVerifier(_verifier);
 
-        FEE_PERCENTAGE = feePercentage;
-        FEE_RECEIVER = feeReceiver;
-        FEE_AMOUNT = (FEE_PERCENTAGE * MEMBERSHIP_DEPOSIT) / 100;
-
-        token = IERC20(_token);
-        verifier = IVerifier(_verifier);
+        feePercentage = _feePercentage;
+        feeReceiver = _feeReceiver;
     }
 
     /// @dev Adds `id_commitment` to the registry set and takes the necessary stake amount.
@@ -90,7 +85,7 @@ contract RLN is Ownable {
     function register(uint256 pubkey) external {
         require(pubkeyIndex < SET_SIZE, "RLN, register: set is full");
 
-        token.safeTransferFrom(msg.sender, address(this), MEMBERSHIP_DEPOSIT);
+        TOKEN.safeTransferFrom(msg.sender, address(this), MEMBERSHIP_DEPOSIT);
         _register(pubkey);
     }
 
@@ -104,7 +99,7 @@ contract RLN is Ownable {
         require(pubkeyLen != 0, "RLN, registerBatch: pubkeys array is empty");
         require(pubkeyIndex + pubkeyLen <= SET_SIZE, "RLN, registerBatch: set is full");
 
-        token.safeTransferFrom(msg.sender, address(this), MEMBERSHIP_DEPOSIT * pubkeyLen);
+        TOKEN.safeTransferFrom(msg.sender, address(this), MEMBERSHIP_DEPOSIT * pubkeyLen);
         for (uint256 i = 0; i < pubkeyLen; i++) {
             _register(pubkeys[i]);
         }
@@ -124,7 +119,7 @@ contract RLN is Ownable {
 
     /// @dev Remove the pubkey from the registry (withdraw/slash).
     /// Transfer the entire stake to the receiver if they registered
-    /// calculated pubkey, otherwise transfers `FEE` to the `FEE_RECEIVER`
+    /// calculated pubkey, otherwise transfers `FEE` to the `feeReceiver`
     /// @param identityCommitment: `identityCommitment`;
     /// @param receiver: stake receiver;
     /// @param proof: snarkjs's format generated proof (without public inputs) packed consequently.
@@ -140,28 +135,28 @@ contract RLN is Ownable {
 
         // If memberAddress == receiver, then withdraw money without a fee
         if (memberAddress == receiver) {
-            token.safeTransfer(receiver, MEMBERSHIP_DEPOSIT);
+            TOKEN.safeTransfer(receiver, MEMBERSHIP_DEPOSIT);
             emit MemberWithdrawn(identityCommitment);
         } else {
-            token.safeTransfer(receiver, MEMBERSHIP_DEPOSIT - FEE_AMOUNT);
-            token.safeTransfer(FEE_RECEIVER, FEE_AMOUNT);
+            uint256 feeAmount = (feePercentage * MEMBERSHIP_DEPOSIT) / 100;
+            TOKEN.safeTransfer(receiver, MEMBERSHIP_DEPOSIT - feeAmount);
+            TOKEN.safeTransfer(feeReceiver, feeAmount);
             emit MemberSlashed(identityCommitment, receiver);
         }
     }
 
     /// @dev Changes fee percentage.
     ///
-    /// @param feePercentage: new fee percentage.
-    function changeFeePercentage(uint8 feePercentage) external onlyOwner {
-        FEE_PERCENTAGE = feePercentage;
-        FEE_AMOUNT = (FEE_PERCENTAGE * MEMBERSHIP_DEPOSIT) / 100;
+    /// @param _feePercentage: new fee percentage.
+    function changeFeePercentage(uint8 _feePercentage) external onlyOwner {
+        feePercentage = _feePercentage;
     }
 
     /// @dev Changes fee receiver.
     ///
-    /// @param feeReceiver: new fee receiver.
-    function changeFeeReceiver(address feeReceiver) external onlyOwner {
-        FEE_RECEIVER = feeReceiver;
+    /// @param _feeReceiver: new fee receiver.
+    function changeFeeReceiver(address _feeReceiver) external onlyOwner {
+        feeReceiver = _feeReceiver;
     }
 
     /// @dev Groth16 proof verification
@@ -170,7 +165,7 @@ contract RLN is Ownable {
         view
         returns (bool)
     {
-        return verifier.verifyProof(
+        return VERIFIER.verifyProof(
             [proof[0], proof[1]],
             [[proof[2], proof[3]], [proof[4], proof[5]]],
             [proof[6], proof[7]],
